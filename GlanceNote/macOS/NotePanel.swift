@@ -63,8 +63,14 @@ final class NotePanel: NSPanel {
             contentRect: frame,
             styleMask: [
                 .borderless,
+                // .resizable is intentionally omitted. Leaving it set gives
+                // AppKit's window-resize subsystem permission to claim edge
+                // mouse events, which races against ResizeHandleView's own
+                // frame mutations and produces split-bar cursor flicker and
+                // frame-commit shuddering. All resize behaviour is owned
+                // exclusively by ResizeHandleView; AppKit participation is
+                // neither needed nor wanted.
                 .nonactivatingPanel,
-                .resizable,
                 .utilityWindow,
             ],
             backing: .buffered,

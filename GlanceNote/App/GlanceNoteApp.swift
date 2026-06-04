@@ -30,19 +30,19 @@ struct GlanceNoteApp: App {
 
     var body: some Scene {
         #if os(macOS)
-        // The MenuBarExtra provides the status bar icon.
-        // It is declared here for SwiftUI scene management; the actual popover
-        // behavior is owned by MenuBarController (instantiated in AppDelegate)
-        // to allow imperative control over popover positioning.
+        // Settings is used as a structural no-op to satisfy the SwiftUI App
+        // protocol's requirement for at least one Scene declaration.
         //
-        // We use an empty WindowGroup with activation policy .accessory so
-        // the app has no Dock icon and no main window. The MenuBarExtra
-        // keeps the run loop alive.
-        MenuBarExtra {
-            // Intentionally empty: MenuBarController drives the real UI.
+        // MenuBarExtra is intentionally absent. Declaring it alongside
+        // MenuBarController (which creates its own NSStatusItem imperatively)
+        // produces two status bar icons and two independent responder paths,
+        // causing an NSViewBridgeErrorCanceled crash when the SwiftUI-owned
+        // icon is clicked.
+        //
+        // MenuBarController, instantiated in AppDelegate, is the sole owner
+        // of the NSStatusItem and the note-list popover.
+        Settings {
             EmptyView()
-        } label: {
-            Image(systemName: "note.text")
         }
         #else
         WindowGroup {
