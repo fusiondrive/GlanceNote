@@ -17,19 +17,30 @@
 //           ├── NSHostingView            ← SwiftUI content (PanelChromeView)
 //           └── ResizeHandleView × 4    ← edge strips, drawn on top
 //
-//   PanelContainerView.hitTest ensures that pointer events landing in the
-//   outer edgeHandleThickness-pt strip are routed exclusively to the
-//   ResizeHandleView that covers that strip, or returned nil (pass-through
-//   to the window) if no handle is present. This prevents NSHostingView's
-//   internally registered NSTrackingArea from consuming edge events.
+//   Four defensive layers seal off AppKit's built-in resize machinery:
 //
-//   ResizeHandleView registers its own NSTrackingArea with .cursorUpdate
-//   so cursor changes are reliable even when SwiftUI invalidates cursor
-//   rects during layout.
+//   Layer 1 — NotePanel.mouseDown:
+//     Window-level override that swallows edge-zone events whose hitTest
+//     returned nil. With .resizable in the style mask, NSPanel.mouseDown
+//     would otherwise engage its own resize-tracking session for those
+//     boundary-rounding events, racing with ResizeHandleView and producing
+//     cursor leakage and frame shudder. Interior events are forwarded to
+//     super so window dragging (isMovableByWindowBackground) is unaffected.
 //
-//   PanelChromeView limits its .onHover tracking to a Rectangle inset by
-//   edgeHandleThickness, so the SwiftUI hover state never activates from
-//   edge-zone mouse movement.
+//   Layer 2 — PanelContainerView.hitTest:
+//     Returns ResizeHandleView unconditionally for edge-zone hits; returns
+//     nil (pass-through to Layer 1) for rounding-boundary misses; returns
+//     the normal hit target for interior points. Prevents NSHostingView's
+//     NSTrackingArea from consuming edge events.
+//
+//   Layer 3 — ResizeHandleView mouse handlers:
+//     mouseDown, mouseDragged, and mouseUp each perform their frame math
+//     and return without calling super, preventing the .resizable
+//     subsystem from co-opting any part of the drag sequence.
+//
+//   Layer 4 — PanelChromeView hover detector:
+//     Inset by edgeHandleThickness so the SwiftUI tracking area never
+//     activates from edge-zone mouse movement.
 
 import AppKit
 import SwiftUI
@@ -63,13 +74,14 @@ final class NotePanel: NSPanel {
             contentRect: frame,
             styleMask: [
                 .borderless,
-                // .resizable is intentionally omitted. Leaving it set gives
-                // AppKit's window-resize subsystem permission to claim edge
-                // mouse events, which races against ResizeHandleView's own
-                // frame mutations and produces split-bar cursor flicker and
-                // frame-commit shuddering. All resize behaviour is owned
-                // exclusively by ResizeHandleView; AppKit participation is
-                // neither needed nor wanted.
+                // .resizable is required for reliable first-drag recognition on
+                // unfocused panels. Without it, AppKit does not deliver the
+                // initial mouseDown to ResizeHandleView when the panel is not
+                // key, causing the first drag to be silently swallowed.
+                // ResizeHandleView suppresses the super calls in mouseDown,
+                // mouseDragged, and mouseUp so AppKit's own resize machinery
+                // never runs; we only need the capability bit, not the behaviour.
+                .resizable,
                 .nonactivatingPanel,
                 .utilityWindow,
             ],
@@ -101,6 +113,44 @@ final class NotePanel: NSPanel {
 
     override var canBecomeKey: Bool  { true  }
     override var canBecomeMain: Bool { false }
+
+    // MARK: Window-level resize interception
+    //
+    // With .resizable in the style mask, NSPanel inherits a mouseDown
+    // implementation that independently inspects the event location against
+    // the window border region before the view hit-test result is considered.
+    // When PanelContainerView.hitTest returns nil for a point that falls at
+    // the floating-point rounding boundary of the 6 pt edge strip — a
+    // condition that occurs infrequently but reliably at certain display
+    // scale factors — the event bypasses the view hierarchy entirely and
+    // arrives here. NSPanel.mouseDown then engages its built-in resize
+    // tracking session, which manifests as the split-bar cursor and the
+    // frame-shuddering regression: the native session and ResizeHandleView's
+    // session both mutate the window frame simultaneously from different
+    // origins, producing visible jitter.
+    //
+    // This override closes that escape hatch. Events whose converted
+    // location falls inside the edge zone are consumed without forwarding
+    // to super, terminating the native resize path before it initialises.
+    // Events whose location is in the interior are forwarded normally so
+    // that NSPanel.mouseDown continues to handle window dragging via
+    // isMovableByWindowBackground without regression.
+    //
+    // Note: mouseDown on the window object is only reachable when hitTest
+    // returns nil. ResizeHandleView handles all edge-zone events whose
+    // hitTest succeeds; this override exclusively covers the rounding-
+    // boundary gap cases.
+    override func mouseDown(with event: NSEvent) {
+        if let cv = contentView {
+            let loc   = cv.convert(event.locationInWindow, from: nil)
+            let inner = cv.bounds.insetBy(dx: edgeHandleThickness, dy: edgeHandleThickness)
+            // If the point is outside the interior zone, it belongs to the
+            // edge strip. Swallow the event to prevent the native resize
+            // subsystem from initiating its own parallel tracking session.
+            guard inner.contains(loc) else { return }
+        }
+        super.mouseDown(with: event)
+    }
 }
 
 // MARK: - NotePanelController
@@ -358,6 +408,8 @@ final class ResizeHandleView: NSView {
     override func mouseDown(with event: NSEvent) {
         dragOrigin   = event.locationInWindow
         initialFrame = panel?.frame ?? .zero
+        // No super call — prevents AppKit's window-resize subsystem from
+        // co-opting the event now that .resizable is in the style mask.
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -378,6 +430,19 @@ final class ResizeHandleView: NSView {
         f.size.height = max(f.size.height, NotePanel.minimumSize.height)
 
         panel.setFrame(f, display: true, animate: false)
+        // No super call — keeps AppKit's resize machinery out of the drag loop.
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // Persist the final frame so the panel reopens at the right size.
+        if let panel { panel.saveFrame(usingName: panel.frameAutosaveName) }
+
+        // Reset drag state.
+        dragOrigin   = .zero
+        initialFrame = .zero
+
+        // No super call — prevents the .resizable subsystem from acting on
+        // mouse-up (e.g. committing its own internal resize transaction).
     }
 }
 
