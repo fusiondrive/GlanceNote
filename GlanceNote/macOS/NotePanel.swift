@@ -8,9 +8,38 @@
 //   - Visible on all Spaces via .canJoinAllSpaces.
 //   - Edge-drag resizing via ResizeHandleView overlays.
 //   - Auto-hiding hover chrome (close button, size presets) via PanelChromeView.
+//
+// Hit-testing and cursor architecture:
+//   The panel view hierarchy is:
+//
+//       NotePanel (NSPanel)
+//       └── PanelContainerView           ← custom hitTest gate
+//           ├── NSHostingView            ← SwiftUI content (PanelChromeView)
+//           └── ResizeHandleView × 4    ← edge strips, drawn on top
+//
+//   PanelContainerView.hitTest ensures that pointer events landing in the
+//   outer edgeHandleThickness-pt strip are routed exclusively to the
+//   ResizeHandleView that covers that strip, or returned nil (pass-through
+//   to the window) if no handle is present. This prevents NSHostingView's
+//   internally registered NSTrackingArea from consuming edge events.
+//
+//   ResizeHandleView registers its own NSTrackingArea with .cursorUpdate
+//   so cursor changes are reliable even when SwiftUI invalidates cursor
+//   rects during layout.
+//
+//   PanelChromeView limits its .onHover tracking to a Rectangle inset by
+//   edgeHandleThickness, so the SwiftUI hover state never activates from
+//   edge-zone mouse movement.
 
 import AppKit
 import SwiftUI
+
+// MARK: - Shared layout constant
+
+/// Width of the edge strip that belongs exclusively to resize handle views.
+/// All three layers (PanelContainerView, ResizeHandleView, PanelChromeView)
+/// read this single value so they remain geometrically consistent.
+private let edgeHandleThickness: CGFloat = 6
 
 // MARK: - NotePanel
 
@@ -105,16 +134,16 @@ final class NotePanelController {
             content: content
         )
 
-        // AppKit does not support adding subviews into an NSHostingView.
-        // The solution is a plain NSView container as the panel's root content
-        // view. NSHostingView and ResizeHandleViews are installed as siblings
-        // within that container, keeping the SwiftUI and AppKit hierarchies
-        // completely separate.
-        let container = NSView()
-        container.autoresizesSubviews = true
+        // PanelContainerView acts as a hit-test gate (see file-level comments).
+        // NSHostingView and ResizeHandleViews are siblings inside it, keeping
+        // the SwiftUI and AppKit view hierarchies strictly separate.
+        let container = PanelContainerView()
         panel.contentView = container
 
-        // Hosting view fills the container entirely.
+        // NSHostingView fills the container edge-to-edge. The hit-test gate in
+        // PanelContainerView, the inset hover detector in PanelChromeView, and
+        // the NSTrackingArea in each ResizeHandleView together ensure that the
+        // outer edgeHandleThickness strip is functionally owned by the handles.
         let hosting = NSHostingView(rootView: root)
         hosting.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(hosting)
@@ -182,6 +211,18 @@ private struct PanelChromeView<Content: View>: View {
             content
                 .environment(\.panelResizeAction, onResize)
 
+            // Hover detector — deliberately inset so its NSTrackingArea does
+            // not cover the outer edge strip owned by ResizeHandleViews.
+            // A filled Rectangle is used (rather than Color.clear) because
+            // SwiftUI only registers a tracking area for views with a defined
+            // hit-test shape; clear Color with no contentShape is ignored.
+            Rectangle()
+                .fill(Color.clear)
+                .contentShape(Rectangle())
+                .padding(edgeHandleThickness)
+                .onHover { isHovered = $0 }
+                .allowsHitTesting(false)   // Gestures still pass to content below.
+
             // Close button — top-right corner, appears on hover only.
             if isHovered {
                 closeButton
@@ -191,7 +232,6 @@ private struct PanelChromeView<Content: View>: View {
             }
         }
         .animation(.easeInOut(duration: 0.12), value: isHovered)
-        .onHover { isHovered = $0 }
     }
 
     // MARK: Close button
@@ -265,11 +305,46 @@ final class ResizeHandleView: NSView {
         }
     }
 
-    // MARK: Cursor rects
+    // MARK: Cursor tracking via NSTrackingArea
+    //
+    // resetCursorRects() is not used here. On borderless NSPanels, AppKit can
+    // invalidate cursor rects during SwiftUI layout passes, causing the resize
+    // cursor to disappear unexpectedly. NSTrackingArea with .cursorUpdate fires
+    // an independent cursor-update event that is not subject to that cycle.
 
-    override func resetCursorRects() {
-        let cursor: NSCursor = (edge == .left || edge == .right) ? .resizeLeftRight : .resizeUpDown
-        addCursorRect(bounds, cursor: cursor)
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        // Remove stale areas before installing a fresh one.
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,   // .inVisibleRect expands this to the view's visible bounds.
+            options: [.activeAlways, .cursorUpdate, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    /// Called by AppKit's cursor-update event mechanism. More reliable than
+    /// resetCursorRects on borderless panels because it is not invalidated
+    /// by SwiftUI layout cycles.
+    override func cursorUpdate(with event: NSEvent) {
+        resizeCursor.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        resizeCursor.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+    }
+
+    /// Accepts the initial click without requiring the panel to become key
+    /// first, so the first drag gesture on an unfocused panel works correctly.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    private var resizeCursor: NSCursor {
+        (edge == .left || edge == .right) ? .resizeLeftRight : .resizeUpDown
     }
 
     // MARK: Drag handling
@@ -297,5 +372,40 @@ final class ResizeHandleView: NSView {
         f.size.height = max(f.size.height, NotePanel.minimumSize.height)
 
         panel.setFrame(f, display: true, animate: false)
+    }
+}
+
+// MARK: - PanelContainerView
+
+/// Root content view for NotePanel.
+///
+/// Acts as a hit-test gate between the NSHostingView (SwiftUI) and the
+/// ResizeHandleViews (AppKit) that share the same container. The override
+/// routes pointer events as follows:
+///
+///   - Point over a ResizeHandleView  →  ResizeHandleView (always wins)
+///   - Point in edge strip, no handle →  nil  (bubbles to window frame)
+///   - Point in interior              →  normal super.hitTest result
+///
+/// Returning nil for interior-edge points prevents NSHostingView's
+/// NSTrackingArea from consuming events that belong to the resize zone,
+/// eliminating cursor-mode conflicts without inletting the hosting view.
+final class PanelContainerView: NSView {
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+
+        // ResizeHandleViews own the edge strip unconditionally.
+        if hit is ResizeHandleView { return hit }
+
+        // For any other hit target, enforce an interior-only zone.
+        // Points within edgeHandleThickness of any edge return nil so the
+        // window's resize machinery (and ResizeHandleView tracking areas)
+        // receive undivided access to cursor and drag events there.
+        if !bounds.insetBy(dx: edgeHandleThickness, dy: edgeHandleThickness).contains(point) {
+            return nil
+        }
+
+        return hit
     }
 }
