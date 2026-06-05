@@ -1,20 +1,31 @@
 # GlanceNote
 
-A widget-first sticky note app for macOS and iOS. Each note lives in a frameless, always-on-top panel that mirrors the exact visual footprint of a WidgetKit widget — so what you see floating on your desktop is what appears on your Home Screen.
+A widget-first sticky note application for macOS and iOS. Each note lives in a frameless, always-on-top `NSPanel` sized to match a WidgetKit system family — so the panel floating on your desktop is visually identical to the widget on your Home Screen.
+
+The application runs exclusively from the menu bar (`LSUIElement = YES`). There is no Dock icon and no entry in the application switcher.
+
+---
+
+## UI Overview
+
+| Menu Bar Popover | Frameless Floating Note Panel |
+| :---: | :---: |
+| <img src="GlanceNote/Resources/popover_view.png" width="400" alt="Status Bar Interface"/> | <img src="GlanceNote/Resources/floating_panel.png" width="400" alt="Frameless Floating Note"/> |
 
 ---
 
 ## Features
 
-- **Frameless floating panels** — borderless `NSPanel` windows that stay above all other apps, visible across all Spaces
-- **Menu bar only** — no Dock icon, no app switcher entry; the status bar icon is the sole entry point on macOS
-- **Widget parity** — default panel sizes are pinned to WidgetKit system family dimensions (small 155×155, medium 329×155, large 329×345)
-- **Edge-drag resize** — drag any of the four panel edges to resize freely; S / M / L preset buttons snap back to widget dimensions
-- **Color tags** — five background tints (yellow, white, blue, green, pink) with frosted-glass material overlay
-- **Debounced auto-save** — edits are committed 500 ms after the last keystroke via SwiftUI's `task(id:)` mechanism; a final save fires on panel close
-- **Session restore** — pinned panels reopen at their saved position and size on next launch
-- **WidgetKit integration** — widget slots promote notes to the Home Screen / Notification Center; the timeline refreshes on every save
-- **iOS companion** — full note list and editor using the same shared view layer
+- **LSUIElement architecture** — the application activates only transiently when a panel or popover receives focus; no persistent Dock presence or main window
+- **Frameless floating panels** — borderless `NSPanel` windows at `.floating` window level, visible across all Spaces via `.canJoinAllSpaces`
+- **Widget visual parity** — default panel dimensions are pinned to WidgetKit system family footprints: small 155×155, medium 329×155, large 329×345
+- **Edge-drag resize** — custom `ResizeHandleView` strips at all four edges handle the full drag lifecycle; S / M / L preset buttons in the toolbar snap back to widget dimensions
+- **AppKit hit-test isolation** — a four-layer event-routing system (`NotePanel.mouseDown`, `PanelContainerView.hitTest`, `ResizeHandleView` mouse handlers, inset SwiftUI hover detector) prevents AppKit's internal resize machinery from engaging in parallel with the custom resize path
+- **Color tags** — five background tints (yellow, white, blue, green, pink) composited over an `NSVisualEffectView` frosted-glass material
+- **Debounced auto-save** — edits commit 500 ms after the last keystroke via SwiftUI's `task(id:)` cancellation mechanism; a synchronous save fires on panel close to prevent data loss
+- **Session restore** — pinned panels reopen at their saved position and size on next launch via per-note `NSWindow` frame autosave keys
+- **WidgetKit integration** — notes promoted to a widget slot are written to a shared App Group `UserDefaults` store and trigger an immediate `WidgetCenter` timeline reload on every save
+- **iOS companion** — full note list and editor sharing the same `NoteCardView` and `SwiftData` schema as the macOS target
 
 ---
 
@@ -27,7 +38,7 @@ A widget-first sticky note app for macOS and iOS. Each note lives in a frameless
 | Xcode | 15.0 |
 | Swift | 5.9 |
 
-A free Apple ID is sufficient for local development. An App Group entitlement (paid Apple Developer Program membership) is required to enable widget data sharing and cross-target store access; the app falls back to a local `Application Support` store otherwise.
+A free Apple ID is sufficient for local development. The `ModelContainer` factory resolves the store path from the App Group container when available and falls back to `~/Library/Application Support/GlanceNote/` for Personal Team builds where App Group provisioning is unavailable. Widget data sharing and cross-target store access require a paid Apple Developer Program membership with an App Group entitlement.
 
 ---
 
@@ -37,59 +48,69 @@ A free Apple ID is sufficient for local development. An App Group entitlement (p
 GlanceNote/
 ├── GlanceNote/
 │   ├── App/
-│   │   └── GlanceNoteApp.swift       # Entry point; AppDelegate; session restore
+│   │   └── GlanceNoteApp.swift       # Entry point; AppDelegate; pinned-panel restore
 │   ├── Model/
 │   │   └── Note.swift                # SwiftData schema; ModelContainer factory
 │   ├── Shared/
-│   │   └── NoteCardView.swift        # Core note surface (macOS panel, iOS, widget preview)
+│   │   └── NoteCardView.swift        # Core note surface — macOS panel, iOS sheet, widget preview
 │   ├── macOS/
 │   │   ├── MenuBarController.swift   # NSStatusItem; note-list popover
-│   │   ├── NotePanel.swift           # NSPanel; ResizeHandleView; PanelContainerView
-│   │   └── PanelRegistry.swift       # UUID → NotePanelController map; open/close/restore
+│   │   ├── NotePanel.swift           # NSPanel subclass; ResizeHandleView; PanelContainerView
+│   │   └── PanelRegistry.swift       # UUID → NotePanelController registry; open / close / restore
 │   ├── iOS/
 │   │   └── iOSRootView.swift         # NavigationStack root; note list and editor
 │   └── Resources/
-│       ├── Info.plist                # LSUIElement = YES (macOS)
-│       └── GlanceNote.entitlements
+│       ├── Info.plist                # LSUIElement = YES
+│       ├── GlanceNote.entitlements
+│       ├── popover_view.png          # Screenshot — menu bar popover
+│       └── floating_panel.png        # Screenshot — floating note panel
 ├── GlanceNoteWidget/
-│   └── GlanceNoteWidget.swift        # TimelineProvider; small/medium/large families
+│   └── GlanceNoteWidget.swift        # TimelineProvider; systemSmall / Medium / Large families
 ├── SharedKit/
 │   └── SharedDataClient.swift        # App Group UserDefaults bridge; NoteSnapshot; NoteColor
-└── ARCHITECTURE.md                   # Full system design document
+├── ARCHITECTURE.md                   # Full subsystem design document
+└── CHANGELOG.md                      # Revision history
 ```
 
 ---
 
-## Architecture Summary
+## Architecture
 
 ### Data flow
 
 ```
 Note (SwiftData)
-    │  commitSave() on every edit
+    │  commitSave() — debounced 500 ms, immediate on color change or disappear
     ▼
 SharedDataClient.write(snapshots:)
-    │  encodes top-N notes to UserDefaults(suiteName:)
+    │  JSON-encodes top-N NoteSnapshot values to UserDefaults(suiteName:)
     │  calls WidgetCenter.shared.reloadAllTimelines()
     ▼
-GlanceNoteWidget TimelineProvider
+GlanceNoteWidget — TimelineProvider
     │  reads NoteSnapshot array from shared UserDefaults
     ▼
 Widget surface (Home Screen / Notification Center)
 ```
 
-### macOS panel hierarchy
+### macOS panel view hierarchy
 
 ```
 NotePanel (NSPanel)
-└── PanelContainerView          ← hit-test gate; routes edge events to handles
-    ├── NSHostingView           ← SwiftUI tree (PanelChromeView → NoteCardView)
-    └── ResizeHandleView × 4   ← per-edge drag strips; own the full resize lifecycle
+└── PanelContainerView              ← hit-test gate; routes edge events to handles
+    ├── NSHostingView               ← SwiftUI tree: PanelChromeView → NoteCardView
+    └── ResizeHandleView × 4       ← per-edge drag strips; own the full drag lifecycle
 ```
 
-`PanelContainerView.hitTest` ensures that pointer events in the outer 6 pt edge strip always reach `ResizeHandleView`, preventing SwiftUI's internal tracking areas from consuming them. `NotePanel.mouseDown(with:)` swallows any edge-zone events that fall through due to floating-point rounding, blocking AppKit's built-in resize machinery from engaging in parallel.
+**AppKit hit-test isolation** is enforced through four coordinated layers:
 
-See `ARCHITECTURE.md` for a full breakdown of all subsystems.
+| Layer | Location | Responsibility |
+|---|---|---|
+| 1 | `NotePanel.mouseDown(with:)` | Swallows edge-zone events that bypass hitTest due to floating-point rounding; forwards interior events to `super` so window dragging is unaffected |
+| 2 | `PanelContainerView.hitTest(_:)` | Returns `ResizeHandleView` unconditionally for edge-zone hits; returns `nil` for unmatched edge points; normal result for interior |
+| 3 | `ResizeHandleView` mouse handlers | `mouseDown`, `mouseDragged`, `mouseUp` each complete without calling `super`, preventing AppKit's `.resizable` subsystem from co-opting any part of the drag sequence |
+| 4 | `PanelChromeView` hover detector | Inset by `edgeHandleThickness` (6 pt) so SwiftUI's `NSTrackingArea` never activates from edge-zone cursor movement |
+
+See `ARCHITECTURE.md` for a complete breakdown of all subsystems including the SwiftData persistence stack, widget timeline strategy, and multi-instance panel model.
 
 ---
 
@@ -97,12 +118,14 @@ See `ARCHITECTURE.md` for a full breakdown of all subsystems.
 
 1. Open `GlanceNote.xcodeproj` in Xcode.
 2. Select the `GlanceNote` scheme.
-3. Set the development team in the target's Signing & Capabilities tab.
+3. In **Signing & Capabilities**, set your development team on both the `GlanceNote` and `GlanceNoteWidget` targets.
 4. Build and run (`Cmd+R`).
 
-The app appears in the menu bar only. No window opens on launch.
+The application does not open any window on launch. Look for the note icon in the menu bar.
 
-To run on a device or enable widget sharing, add an App Group (`group.com.yourteam.glancenote`) to both the `GlanceNote` and `GlanceNoteWidget` targets and update the suite name in `SharedDataClient.swift`.
+**To enable widget data sharing:** add an App Group identifier (`group.com.yourteam.glancenote`) to both targets under Signing & Capabilities, then update `AppGroup.suiteName` in `SharedKit/SharedDataClient.swift` to match.
+
+**Gatekeeper (distribution builds):** if running a build not signed with a Developer ID, right-click the application bundle in Finder and select **Open** from the context menu to bypass the initial Gatekeeper quarantine prompt.
 
 ---
 
