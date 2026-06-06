@@ -8,22 +8,31 @@
 // Visual specification: corner radius, padding, and proportions mirror the
 // system WidgetKit container so the panel and the widget feel identical.
 //
-// Dark mode implementation:
-//   The card background is built from two layers:
-//     1. NSVisualEffectView (.hudWindow, .behindWindow) — samples the live
-//        desktop content and produces an adaptive blur tint that automatically
-//        tracks light/dark appearance, exactly as native macOS widgets do.
-//     2. Color(hex:).opacity(0.45) — overlays the per-note color tint on top
-//        of the vibrancy layer. Opacity is kept below 0.5 so the vibrancy
-//        material remains legible in dark mode rather than being buried under
-//        an opaque color plane.
-//   All text uses semantic system colors (Color.primary / Color.secondary)
-//   so contrast adapts automatically with appearance. The timestamp uses
-//   Color.secondary at a restrained opacity so it remains readable without
-//   competing with body content.
-//   A 0.5 pt border applied via .overlay(RoundedRectangle.strokeBorder)
-//   anchors the card silhouette against dark wallpapers; the stroke color
-//   is NSColor.separatorColor, which AppKit keys to the current appearance.
+// Appearance contract — "physical paper" paradigm:
+//   GlanceNote notes are modelled after physical pastel sticky notes. A yellow
+//   note is always yellow, with dark ink on top — regardless of whether macOS
+//   is running in Light or Dark Mode. Adopting the system Dark Mode colour
+//   scheme turns the vibrancy blur dark and inverts semantic text colours to
+//   white, both of which destroy readability against pastel backgrounds.
+//
+//   To enforce a stable, light-mode-only rendering contract:
+//
+//   1. NSVisualEffectView.appearance is pinned to NSAppearance(named: .aqua).
+//      This forces the blur material to always sample and composite in the
+//      Aqua (light) colour space, producing a clean bright frost even when
+//      the system appearance is Dark. The host desktop content still bleeds
+//      through the blur; only AppKit's tinting pass is locked to light mode.
+//
+//   2. The SwiftUI subtree receives .environment(\.colorScheme, .light).
+//      This propagates the light colour scheme to all SwiftUI children,
+//      ensuring .ultraThinMaterial, system materials, and any remaining
+//      semantic colour tokens resolve to their light-mode values without
+//      requiring manual overrides at every call site.
+//
+//   3. All text and border values use explicit, hard-coded dark shades
+//      (black at varying opacities) rather than semantic Color.primary /
+//      Color.secondary. This eliminates any residual appearance-adaptive
+//      path and guarantees consistent contrast against pastel backgrounds.
 
 import AppKit
 import SwiftUI
@@ -52,13 +61,17 @@ struct NoteCardView: View {
             background
             content
         }
+        // Propagate a forced light colour scheme to all SwiftUI children so
+        // that system materials (.ultraThinMaterial, etc.) and any remaining
+        // semantic colour tokens resolve to their light-mode variants. The
+        // NSVisualEffectView appearance is pinned separately in VisualEffectView.
+        .environment(\.colorScheme, .light)
         .clipShape(RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous))
-        // Razor-thin adaptive border. NSColor.separatorColor is keyed to the
-        // current AppKit appearance and resolves correctly in both light and
-        // dark environments without a hard-coded value.
+        // Static dark border — appearance-independent, always readable against
+        // the forced-light pastel background.
         .overlay {
             RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
         }
         .onHover { isHovered = $0 }
         // task(id:) cancels and restarts whenever note.body changes, giving a
@@ -83,18 +96,19 @@ struct NoteCardView: View {
 
     // MARK: - Background
 
-    /// Two-layer background: NSVisualEffectView for live desktop vibrancy,
-    /// note color tint composited on top.
+    /// Two-layer background: NSVisualEffectView (pinned to light appearance)
+    /// for live desktop vibrancy, note colour tint composited on top.
     ///
     /// Layer order (bottom to top):
-    ///   1. NSVisualEffectView (.hudWindow, .behindWindow) — adaptive blur that
-    ///      bleeds the desktop wallpaper tint in both light and dark appearances.
-    ///   2. Color tint at 0.45 opacity — preserves vibrancy visibility in dark
-    ///      mode while still expressing the per-note color identity.
+    ///   1. VisualEffectView — blur sampled from behind the window, always
+    ///      rendered in Aqua (light) space via the pinned NSAppearance.
+    ///   2. Color tint at 0.55 opacity — restored to a higher value now that
+    ///      the vibrancy base is always light and will not compete with the
+    ///      pastel overlay in dark mode.
     private var background: some View {
         ZStack {
             VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-            Color(hex: note.colorTag.hexBackground).opacity(0.45)
+            Color(hex: note.colorTag.hexBackground).opacity(0.55)
         }
         .ignoresSafeArea()
     }
@@ -117,8 +131,8 @@ struct NoteCardView: View {
             .font(.system(size: 13, weight: .regular, design: .rounded))
             .foregroundStyle(
                 note.body.isEmpty
-                    ? AnyShapeStyle(Color.secondary)
-                    : AnyShapeStyle(Color.primary.opacity(0.82))
+                    ? AnyShapeStyle(Color.black.opacity(0.35))
+                    : AnyShapeStyle(Color.black.opacity(0.82))
             )
             .lineLimit(nil)
             .multilineTextAlignment(.leading)
@@ -132,10 +146,8 @@ struct NoteCardView: View {
         VStack(spacing: 0) {
             TextEditor(text: $note.body)
                 .font(.system(size: 14, weight: .regular, design: .rounded))
-                // Color.primary is a semantic value — AppKit maps it to the
-                // correct contrast level for the current appearance without
-                // any manual dark-mode branching.
-                .foregroundStyle(Color.primary.opacity(0.88))
+                // Hard-coded dark value — appearance-independent ink on paper.
+                .foregroundStyle(Color.black.opacity(0.85))
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
                 // Bottom padding reserves space for the color toolbar.
@@ -170,12 +182,12 @@ struct NoteCardView: View {
     /// layout never shifts.
     private var trailingSlot: some View {
         ZStack(alignment: .trailing) {
-            // Timestamp — Color.secondary at 0.7 opacity clears the WCAG AA
-            // contrast threshold on dark frosted backgrounds without competing
-            // with body text. Hidden on hover when resize controls are available.
+            // Static dark tint — readable against any pastel background without
+            // competing with body text. Hidden on hover when resize controls
+            // are available.
             Text(note.modifiedAt, style: .time)
                 .font(.caption2)
-                .foregroundStyle(Color.secondary.opacity(0.7))
+                .foregroundStyle(Color.black.opacity(0.45))
                 .opacity(isHovered && onResize != nil ? 0 : 1)
 
             // Size preset bar — visible only when a resize action is available
@@ -194,22 +206,13 @@ struct NoteCardView: View {
             .fill(Color(hex: color.hexBackground))
             .frame(width: 13, height: 13)
             .overlay {
-                // Two-ring border system:
-                //   Inner ring — selection indicator or default separator.
-                //   Outer ring — overlay-blended white at 0.12 opacity;
-                //     prevents light-colored swatches from disappearing
-                //     against a dark vibrancy background.
-                ZStack {
-                    Circle().strokeBorder(
-                        isSelected ? Color.primary.opacity(0.55) : Color.secondary.opacity(0.2),
-                        lineWidth: isSelected ? 1.5 : 0.5
-                    )
-                    Circle().strokeBorder(
-                        Color.white.opacity(0.12),
-                        lineWidth: 0.5
-                    )
-                    .blendMode(.overlay)
-                }
+                // Single dark ring — static, appearance-independent.
+                // A selected swatch gets a stronger stroke; unselected swatches
+                // get a hairline separator to distinguish them from the background.
+                Circle().strokeBorder(
+                    isSelected ? Color.black.opacity(0.5) : Color.black.opacity(0.15),
+                    lineWidth: isSelected ? 1.5 : 0.5
+                )
             }
             .onTapGesture {
                 note.colorTag = color
@@ -258,10 +261,19 @@ private enum Layout {
 
 /// Thin NSViewRepresentable bridge exposing NSVisualEffectView to SwiftUI.
 ///
-/// Material and blending mode are configured at the call site so this view
-/// remains reusable. State is always .active — panels may be non-key while
-/// still visible, and .active ensures the blur is rendered at full fidelity
-/// regardless of focus state.
+/// Material and blending mode are configured at the call site.
+///
+/// Appearance contract:
+///   The view's appearance is pinned to NSAppearance(named: .aqua) so that
+///   the vibrancy material always composites in the light colour space,
+///   regardless of the system Dark Mode setting. Without this pin, AppKit
+///   inherits the window's effective appearance and renders a dark, murky
+///   blur in Dark Mode — which conflicts with the pastel note tints layered
+///   on top. Pinning to .aqua keeps the blur bright and clean in all
+///   system appearance configurations.
+///
+///   State is always .active. Panels may be non-key while still visible;
+///   .active ensures the blur renders at full fidelity regardless of focus.
 struct VisualEffectView: NSViewRepresentable {
     var material: NSVisualEffectView.Material
     var blendingMode: NSVisualEffectView.BlendingMode
@@ -271,12 +283,18 @@ struct VisualEffectView: NSViewRepresentable {
         view.material = material
         view.blendingMode = blendingMode
         view.state = .active
+        // Pin to Aqua (light) appearance. This call is the single point of
+        // enforcement for the "physical paper" rendering contract: the blur
+        // base is always a bright, clean frost regardless of system appearance.
+        view.appearance = NSAppearance(named: .aqua)
         return view
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+        // Appearance is not updated here — it is intentionally pinned at
+        // construction time and must not be overwritten on subsequent passes.
     }
 }
 
@@ -301,9 +319,13 @@ private struct SizePresetBar: View {
             ForEach(presets, id: \.label) { preset in
                 Button(preset.label) { onResize(preset.size) }
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.secondary)
+                    // Static dark label — readable against the forced-light
+                    // capsule background at any system appearance.
+                    .foregroundStyle(Color.black.opacity(0.5))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
+                    // .ultraThinMaterial resolves to its light variant because
+                    // the parent view tree carries .environment(\.colorScheme, .light).
                     .background(.ultraThinMaterial, in: Capsule())
                     .buttonStyle(.plain)
                     .help("Resize panel to \(preset.label)")
