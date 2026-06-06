@@ -148,16 +148,23 @@ struct NoteCardView: View {
 
     // MARK: - Color toolbar
 
+    /// Left side: five pastel swatches + optional glass swatch (macOS 26+).
+    /// Right side: Spacer + trailingSlot (timestamp / resize pills).
+    /// The two sides are mutually exclusive in selection state — picking any
+    /// pastel color kills glass mode, and picking the glass swatch kills the
+    /// active pastel selection visually (though colorTag is preserved so it
+    /// comes back when the user turns glass off).
     private var colorToolbar: some View {
         HStack(spacing: 6) {
             ForEach(NoteColor.allCases, id: \.self) { color in
                 colorSwatch(color)
             }
-            Spacer()
-            // glass toggle — only shows up on macOS 26 where it actually does something
+            // glass swatch lives in the left cluster with the color swatches,
+            // not off on the right — that's the whole point of this refactor
             if #available(macOS 26.0, *), !isReadOnly {
-                glassToggle
+                glassSwatch
             }
+            Spacer()
             trailingSlot
         }
         .padding(.horizontal, Layout.contentPadding)
@@ -183,27 +190,39 @@ struct NoteCardView: View {
         .animation(.spring(duration: 0.25), value: isHovered)
     }
 
-    /// Toggle button that switches the note between pastel and glass rendering.
-    /// Only inserted into the hierarchy on macOS 26+.
+    /// A 13×13 circle swatch that represents Liquid Glass mode.
+    /// Visually matches the pastel swatches in size and selection-ring logic.
+    /// An ultraThinMaterial fill + sparkle icon signals "glass" without
+    /// needing a hard-coded color that would look arbitrary.
+    /// Only inserted on macOS 26+ where .glassEffect is actually available.
     @available(macOS 26.0, *)
-    private var glassToggle: some View {
-        Button {
-            isNoteGlassEnabled.toggle()
-        } label: {
-            Image(systemName: isNoteGlassEnabled ? "sparkle" : "sparkle")
-                .font(.system(size: 10, weight: .medium))
-                // active state pops with accent color to make it obvious glass is on
-                .foregroundStyle(isNoteGlassEnabled
-                                 ? Color.accentColor.opacity(0.8)
-                                 : (glassActive ? Color.secondary : Color.black.opacity(0.35)))
-                .symbolVariant(isNoteGlassEnabled ? .fill : .none)
-        }
-        .buttonStyle(.plain)
-        .help(isNoteGlassEnabled ? "Disable Liquid Glass" : "Enable Liquid Glass")
+    private var glassSwatch: some View {
+        Circle()
+            .fill(.ultraThinMaterial)
+            .frame(width: 13, height: 13)
+            .overlay {
+                // tiny sparkle to distinguish this from the solid pastel circles
+                Image(systemName: "sparkle")
+                    .font(.system(size: 6, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(0.6))
+            }
+            .overlay {
+                // same selection ring logic as the pastel swatches — 1.5pt when
+                // active, 0.5pt hairline when not, so the whole row feels consistent
+                Circle().strokeBorder(
+                    isNoteGlassEnabled ? Color.black.opacity(0.5) : Color.black.opacity(0.15),
+                    lineWidth: isNoteGlassEnabled ? 1.5 : 0.5
+                )
+            }
+            .onTapGesture {
+                isNoteGlassEnabled = true
+                commitSave()
+            }
+            .help("Liquid Glass (Beta)")
     }
 
     private func colorSwatch(_ color: NoteColor) -> some View {
-        let isSelected = color == note.colorTag
+        let isSelected = color == note.colorTag && !isNoteGlassEnabled
         // swatch rings go adaptive in glass mode — no hard-coded black against
         // an unknown wallpaper; pastel mode keeps the static dark ring
         let selectedColor: Color = glassActive ? .primary.opacity(0.55) : .black.opacity(0.5)
@@ -219,6 +238,9 @@ struct NoteCardView: View {
             }
             .onTapGesture {
                 note.colorTag = color
+                // kill glass mode if they explicitly pick a standard paper color —
+                // the two modes are mutually exclusive in the selection UI
+                isNoteGlassEnabled = false
                 // color changes skip the debounce — task(id:) only watches body
                 commitSave()
             }
