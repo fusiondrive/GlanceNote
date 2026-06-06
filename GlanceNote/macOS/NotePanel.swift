@@ -58,13 +58,25 @@ final class NotePanel: NSPanel {
 
     // MARK: Sizing constants
 
-    static let minimumSize = NSSize(width: 160, height: 120)
+    // Minimum width is derived from the toolbar chrome at its narrowest:
+    //   16 pt left padding
+    //   + 5 color swatches × 13 pt + 4 gaps × 6 pt  = 89 pt
+    //   + ~8 pt spacer cushion
+    //   + 3 size-preset buttons × ~26 pt + 2 gaps × 4 pt = 86 pt
+    //   + 16 pt right padding
+    //   = ~215 pt theoretical minimum.
+    // 240 pt is used as the enforced floor to provide a comfortable margin
+    // and to match the S preset width, ensuring the panel can never be
+    // dragged to a state where toolbar controls are clipped.
+    static let minimumSize = NSSize(width: 240, height: 180)
 
-    /// Point dimensions matching WidgetKit system families.
+    /// Named size presets. These no longer track WidgetKit family footprints
+    /// exactly — the project is macOS-only and the presets are sized to
+    /// ensure the bottom toolbar chrome always fits at the smallest dimension.
     enum Preset {
-        static let small  = NSSize(width: 155, height: 155)
-        static let medium = NSSize(width: 329, height: 155)
-        static let large  = NSSize(width: 329, height: 345)
+        static let small  = NSSize(width: 240, height: 240)
+        static let medium = NSSize(width: 400, height: 240)
+        static let large  = NSSize(width: 400, height: 440)
     }
 
     // MARK: Init

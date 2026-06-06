@@ -58,11 +58,11 @@ final class Note {
         self.isPinned = isPinned
         self.widgetSlot = widgetSlot
 
-        // Default panel size matches WidgetKit medium footprint.
+        // Default panel size matches the medium preset (NotePanel.Preset.medium).
         self.windowOriginX = 200
         self.windowOriginY = 400
-        self.windowWidth = 329
-        self.windowHeight = 155
+        self.windowWidth  = 400
+        self.windowHeight = 240
 
         let now = Date()
         self.createdAt = now

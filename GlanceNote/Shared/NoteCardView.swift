@@ -307,11 +307,12 @@ private struct SizePresetBar: View {
 
     let onResize: (CGSize) -> Void
 
-    /// Width × height presets aligned to WidgetKit point dimensions.
+    /// Named size presets. Values mirror NotePanel.Preset and must be kept
+    /// in sync with the constants defined there.
     private let presets: [(label: String, size: CGSize)] = [
-        ("S", CGSize(width: 155, height: 155)),
-        ("M", CGSize(width: 329, height: 155)),
-        ("L", CGSize(width: 329, height: 345)),
+        ("S", CGSize(width: 240, height: 240)),
+        ("M", CGSize(width: 400, height: 240)),
+        ("L", CGSize(width: 400, height: 440)),
     ]
 
     var body: some View {
