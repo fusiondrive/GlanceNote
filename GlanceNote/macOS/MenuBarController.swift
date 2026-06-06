@@ -3,6 +3,12 @@
 // Manages the NSStatusItem that serves as the sole entry point to GlanceNote
 // on macOS. The popover it presents contains the full note list and controls
 // for creating, pinning, and deleting notes.
+//
+// Liquid Glass support (macOS 26+):
+//   The NSPopover background is set to .clear at init so the SwiftUI layer
+//   can own the entire visual surface. When the Liquid Glass toggle is off,
+//   MenuBarPopoverView renders a standard window-material background itself.
+//   When on, it applies .glassEffect and lets the compositor do its thing.
 
 import AppKit
 import SwiftUI
@@ -34,6 +40,12 @@ final class MenuBarController {
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
+
+        // Clear the default opaque background so the SwiftUI content layer
+        // can own the surface completely — needed for Liquid Glass to punch
+        // through without the popover's own background blocking the refraction.
+        popover.backgroundColor = .clear
+
         popover.contentViewController = NSHostingController(
             rootView: MenuBarPopoverView()
                 .modelContext(modelContext)
@@ -82,6 +94,11 @@ final class MenuBarController {
 
 /// The root SwiftUI view shown inside the menu bar popover.
 /// Lists all notes and provides quick actions.
+///
+/// When Liquid Glass is enabled the view strips its own opaque background
+/// and applies .glassEffect so the desktop content bleeds through cleanly.
+/// When disabled it renders a standard window-material surface so the popover
+/// still looks correct even though the NSPopover background is .clear.
 private struct MenuBarPopoverView: View {
 
     @Environment(\.modelContext) private var context
@@ -90,6 +107,9 @@ private struct MenuBarPopoverView: View {
     @Query(sort: \Note.modifiedAt, order: .reverse)
     private var notes: [Note]
 
+    // persisted across launches — flipping this is the whole feature
+    @AppStorage("isLiquidGlassEnabled") private var isLiquidGlassEnabled = false
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -97,6 +117,18 @@ private struct MenuBarPopoverView: View {
             noteList
         }
         .frame(width: 300)
+        // When glass is off we need to provide our own background because
+        // the NSPopover's .backgroundColor is .clear. A thin material gives
+        // us the standard frosted-panel look at zero extra cost.
+        .background {
+            if !isLiquidGlassEnabled {
+                Rectangle()
+                    .fill(.regularMaterial)
+            }
+        }
+        // Glass path — gotta strip any default background first or the
+        // refraction just paints over a solid surface and looks broken.
+        .modifier(LiquidGlassModifier(enabled: isLiquidGlassEnabled))
     }
 
     // MARK: Subviews
@@ -105,7 +137,23 @@ private struct MenuBarPopoverView: View {
         HStack {
             Text("GlanceNote")
                 .font(.headline)
+                // pull the text back slightly in glass mode so it doesn't
+                // fight the refraction highlights around the edges
+                .foregroundStyle(isLiquidGlassEnabled ? .primary.opacity(0.85) : .primary)
+
             Spacer()
+
+            // Liquid Glass toggle — lives here so it's always one tap away
+            Toggle(isOn: $isLiquidGlassEnabled) {
+                Image(systemName: isLiquidGlassEnabled
+                      ? "sparkles.rectangle.stack.fill"
+                      : "sparkles.rectangle.stack")
+                    .symbolRenderingMode(.hierarchical)
+                    .help(isLiquidGlassEnabled ? "Disable Liquid Glass" : "Enable Liquid Glass")
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.plain)
+
             Button(action: createNote) {
                 Image(systemName: "plus")
             }
@@ -142,12 +190,43 @@ private struct MenuBarPopoverView: View {
     }
 }
 
+// MARK: - LiquidGlassModifier
+
+/// Encapsulates the conditional glass effect so the call site stays clean.
+///
+/// When enabled:
+///   .glassEffect(.clear, in: RoundedRectangle) replaces the view's rendering
+///   surface with the macOS 26 Liquid Glass compositor. The .clear style lets
+///   desktop content and refraction highlights show through unobstructed.
+///
+/// When disabled: no-op — the parent provides its own .regularMaterial background.
+private struct LiquidGlassModifier: ViewModifier {
+
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                // The glass effect itself handles all the blur, refraction,
+                // and specular highlights — we just pick the shape and style.
+                .glassEffect(
+                    .clear,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - NoteRowView
 
 private struct NoteRowView: View {
 
     @Environment(PanelRegistry.self) private var registry
     @Bindable var note: Note
+
+    @AppStorage("isLiquidGlassEnabled") private var isLiquidGlassEnabled = false
 
     var body: some View {
         HStack {
@@ -161,6 +240,8 @@ private struct NoteRowView: View {
             Text(note.body.isEmpty ? "Empty note" : note.body)
                 .lineLimit(1)
                 .foregroundStyle(note.body.isEmpty ? .secondary : .primary)
+                // same slight pullback as the header when glass is on
+                .opacity(isLiquidGlassEnabled ? 0.85 : 1)
                 .font(.callout)
 
             Spacer()
