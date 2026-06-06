@@ -1,8 +1,7 @@
 // GlanceNote/App/GlanceNoteApp.swift
 //
-// App entry point. On macOS the application is entirely menu-bar driven;
+// App entry point. The application is entirely menu-bar driven;
 // there is no main window (LSUIElement = YES in Info.plist).
-// On iOS the standard scene lifecycle runs a NavigationStack root.
 
 import SwiftUI
 import SwiftData
@@ -10,9 +9,7 @@ import SwiftData
 @main
 struct GlanceNoteApp: App {
 
-    #if os(macOS)
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    #endif
 
     // The ModelContainer is initialized once here and injected into the
     // environment so every SwiftUI view and the AppDelegate can share it.
@@ -29,7 +26,6 @@ struct GlanceNoteApp: App {
     }
 
     var body: some Scene {
-        #if os(macOS)
         // Settings is used as a structural no-op to satisfy the SwiftUI App
         // protocol's requirement for at least one Scene declaration.
         //
@@ -44,18 +40,11 @@ struct GlanceNoteApp: App {
         Settings {
             EmptyView()
         }
-        #else
-        WindowGroup {
-            iOSRootView()
-                .modelContainer(container)
-        }
-        #endif
     }
 }
 
-// MARK: - AppDelegate (macOS)
+// MARK: - AppDelegate
 
-#if os(macOS)
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -98,4 +87,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 }
-#endif
