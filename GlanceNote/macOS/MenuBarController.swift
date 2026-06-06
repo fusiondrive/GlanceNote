@@ -85,9 +85,9 @@ final class MenuBarController {
 
 /// Root SwiftUI view inside the menu bar popover.
 ///
-/// Simulated Liquid Glass support:
-///   When the toggle is on, LiquidGlassModifier layers ultraThinMaterial +
-///   a white tint + a specular strokeBorder + drop shadow to fake the glass look.
+/// Liquid Glass support (macOS 26+):
+///   When the toggle is on, LiquidGlassModifier applies .glassEffect so the
+///   system compositor handles the blur, refraction, and specular highlights.
 ///   When off, a standard .regularMaterial rectangle provides the normal
 ///   frosted-panel appearance.
 private struct MenuBarPopoverView: View {
@@ -107,16 +107,10 @@ private struct MenuBarPopoverView: View {
             noteList
         }
         .frame(width: 300)
-        // background depends on glass state — NSPopover doesn't give us a
-        // tinted surface for free, so we always provide one explicitly
+        // standard background when glass is off — need this because NSPopover
+        // doesn't give us a tinted surface for free on all configurations
         .background {
-            if isLiquidGlassEnabled {
-                ZStack {
-                    // faking the glass refraction since the OS doesn't give it to us for free
-                    Rectangle().fill(.ultraThinMaterial)
-                    Rectangle().fill(Color.white.opacity(0.1))
-                }
-            } else {
+            if !isLiquidGlassEnabled {
                 Rectangle()
                     .fill(.regularMaterial)
             }
@@ -130,7 +124,7 @@ private struct MenuBarPopoverView: View {
         HStack {
             Text("GlanceNote")
                 .font(.headline)
-                // pull text back slightly in glass mode — the frosted surface
+                // pull text back slightly in glass mode — the .clear refraction
                 // generates bright specular edges and full-opacity text fights them
                 .foregroundStyle(isLiquidGlassEnabled
                                  ? Color.primary.opacity(0.85)
@@ -138,7 +132,8 @@ private struct MenuBarPopoverView: View {
 
             Spacer()
 
-            // glass toggle — always visible; .fill variant signals the active state
+            // glass toggle — .fill variant signals the active state, same
+            // convention SF Symbols uses across the system
             Toggle(isOn: $isLiquidGlassEnabled) {
                 Image(systemName: isLiquidGlassEnabled
                       ? "sparkles.rectangle.stack.fill"
@@ -187,26 +182,29 @@ private struct MenuBarPopoverView: View {
 
 // MARK: - LiquidGlassModifier
 
-/// Simulates the Liquid Glass look using standard SwiftUI materials.
+/// Applies the native macOS 26 Liquid Glass compositor to a view.
 ///
-/// The background stack (ultraThinMaterial + white tint) is handled by the
-/// parent — this modifier just layers the finishing touches: a specular
-/// strokeBorder edge highlight and a soft floating shadow.
+/// Guarded by @available so the modifier compiles cleanly against a
+/// macOS 14 deployment target — on older OS versions it's a no-op.
+/// The .clear glass style lets desktop content and refraction highlights
+/// show through without any tint on top.
 private struct LiquidGlassModifier: ViewModifier {
 
     let enabled: Bool
 
-    private let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-
     func body(content: Content) -> some View {
         if enabled {
-            content
-                // specular highlight — simulates light catching the edge of thick glass
-                .overlay {
-                    shape.strokeBorder(.white.opacity(0.3), lineWidth: 1)
-                }
-                // soft shadow so the popover reads as floating off the menu bar
-                .shadow(color: .black.opacity(0.15), radius: 15, y: 10)
+            if #available(macOS 26.0, *) {
+                content
+                    .glassEffect(
+                        .clear,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+            } else {
+                // glass not available on this OS — fall through to the
+                // .regularMaterial background the parent already provides
+                content
+            }
         } else {
             content
         }
