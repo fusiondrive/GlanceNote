@@ -147,21 +147,46 @@ private struct MenuBarPopoverView: View {
             Button(action: createNote) {
                 Image(systemName: "plus")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
 
+    @ViewBuilder
     private var noteList: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(notes) { note in
-                    NoteRowView(note: note)
-                    Divider()
+        if notes.isEmpty {
+            emptyState
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(notes) { note in
+                        NoteRowView(note: note)
+                        Divider()
+                    }
                 }
+                // Rows slide/settle instead of teleporting when a note is
+                // created or deleted.
+                .animation(.easeOut(duration: 0.2), value: notes.count)
             }
         }
+    }
+
+    /// Wayfinding for first launch: an empty scroll area reads as broken,
+    /// so answer "what is this and what do I do?" in place.
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "note.text")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("No Notes")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("Click + to create a floating note.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: Actions
@@ -216,9 +241,15 @@ private struct LiquidGlassModifier: ViewModifier {
 private struct NoteRowView: View {
 
     @Environment(PanelRegistry.self) private var registry
+    @Environment(\.modelContext) private var context
     @Bindable var note: Note
 
     @AppStorage("isLiquidGlassEnabled") private var isLiquidGlassEnabled = false
+
+    /// Hover state for the row highlight. The highlight itself is nearly
+    /// instant — hover feedback is seen constantly and must never lag the
+    /// pointer.
+    @State private var isHovering = false
 
     var body: some View {
         HStack {
@@ -241,14 +272,26 @@ private struct NoteRowView: View {
             } label: {
                 Image(systemName: note.isPinned ? "pin.fill" : "pin")
                     .foregroundStyle(note.isPinned ? Color.accentColor : Color.secondary)
+                    // Morph pin → pin.fill in place instead of swapping glyphs.
+                    .contentTransition(.symbolEffect(.replace))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle(pressedScale: 0.85))
+            .animation(.easeOut(duration: 0.15), value: note.isPinned)
+            .help(note.isPinned ? "Unpin note" : "Pin note to desktop")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
+        .background(Color.primary.opacity(isHovering ? 0.06 : 0))
+        .animation(.easeOut(duration: 0.1), value: isHovering)
+        .onHover { isHovering = $0 }
         .onTapGesture {
             if !note.isPinned { togglePin() }
+        }
+        .contextMenu {
+            Button(note.isPinned ? "Unpin" : "Pin to Desktop") { togglePin() }
+            Divider()
+            Button("Delete", role: .destructive) { deleteNote() }
         }
     }
 
@@ -263,5 +306,14 @@ private struct NoteRowView: View {
         } else {
             registry.close(noteID: note.id)
         }
+        try? context.save()
+    }
+
+    private func deleteNote() {
+        // Close the floating panel first so no orphaned window survives
+        // the model deletion.
+        registry.close(noteID: note.id)
+        context.delete(note)
+        try? context.save()
     }
 }

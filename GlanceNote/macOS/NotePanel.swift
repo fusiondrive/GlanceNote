@@ -196,8 +196,22 @@ final class NotePanelController {
                 newFrame.origin.y  += newFrame.height - size.height
                 newFrame.size.width  = size.width
                 newFrame.size.height = size.height
-                panel.setFrame(newFrame, display: true, animate: true)
-                panel.saveFrame(usingName: panel.frameAutosaveName)
+                // setFrame(animate: true) would use AppKit's default
+                // animationResizeTime — slow and linear-feeling. Drive the
+                // resize through NSAnimationContext with a strong ease-out
+                // instead, and honor Reduce Motion with an instant set.
+                if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                    panel.setFrame(newFrame, display: true, animate: false)
+                    panel.saveFrame(usingName: panel.frameAutosaveName)
+                } else {
+                    NSAnimationContext.runAnimationGroup({ ctx in
+                        ctx.duration = 0.28
+                        ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
+                        panel.animator().setFrame(newFrame, display: true)
+                    }, completionHandler: {
+                        panel.saveFrame(usingName: panel.frameAutosaveName)
+                    })
+                }
             },
             content: content
         )
@@ -227,9 +241,71 @@ final class NotePanelController {
     }
 
     // MARK: Visibility
+    //
+    // Panels materialize instead of hard-cutting. Enter: fade in while rising
+    // 8 pt into place with a strong ease-out (fast start = responsive).
+    // Exit: reverse the same path, slightly faster — spatial consistency
+    // means a panel leaves the way it arrived. Under Reduce Motion both
+    // collapse to a plain cross-fade with no positional movement.
 
-    func show() { panel.orderFront(nil) }
-    func close() { panel.orderOut(nil) }
+    private var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    /// Strong ease-out (fast start, gentle settle) shared by enter and exit
+    /// so the two directions read as one mirrored path.
+    private static let easeOut = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
+
+    func show() {
+        guard !panel.isVisible else {
+            panel.orderFront(nil)
+            return
+        }
+
+        let reduceMotion = self.reduceMotion
+        let target = panel.frame
+        panel.alphaValue = 0
+
+        if !reduceMotion {
+            var start = target
+            start.origin.y -= 8
+            panel.setFrame(start, display: false)
+        }
+        panel.orderFront(nil)
+
+        NSAnimationContext.runAnimationGroup { [panel] ctx in
+            ctx.duration = reduceMotion ? 0.15 : 0.18
+            ctx.timingFunction = Self.easeOut
+            panel.animator().alphaValue = 1
+            if !reduceMotion {
+                panel.animator().setFrame(target, display: true)
+            }
+        }
+    }
+
+    func close() {
+        guard panel.isVisible else { return }
+
+        let reduceMotion = self.reduceMotion
+        let original = panel.frame
+        var exit = original
+        exit.origin.y -= 8
+
+        NSAnimationContext.runAnimationGroup({ [panel] ctx in
+            ctx.duration = 0.13
+            ctx.timingFunction = Self.easeOut
+            panel.animator().alphaValue = 0
+            if !reduceMotion {
+                panel.animator().setFrame(exit, display: true)
+            }
+        }, completionHandler: { [panel] in
+            panel.orderOut(nil)
+            // Restore pre-exit geometry so the autosaved frame never drifts
+            // 8 pt per close/reopen cycle, and reset alpha for the next show().
+            panel.setFrame(original, display: false)
+            panel.alphaValue = 1
+        })
+    }
 
     // MARK: Edge resize handles
 
@@ -292,14 +368,16 @@ private struct PanelChromeView<Content: View>: View {
                 .allowsHitTesting(false)   // Gestures still pass to content below.
 
             // Close button — top-right corner, appears on hover only.
+            // Scale + opacity (never from nothing): the button materializes
+            // in place rather than blinking into existence.
             if isHovered {
                 closeButton
                     .padding(.top, 8)
                     .padding(.trailing, 8)
-                    .transition(.opacity)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
         }
-        .animation(.easeInOut(duration: 0.12), value: isHovered)
+        .animation(.easeOut(duration: 0.14), value: isHovered)
     }
 
     // MARK: Close button
@@ -311,7 +389,7 @@ private struct PanelChromeView<Content: View>: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(Color.secondary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
         .help("Close note")
     }
 }

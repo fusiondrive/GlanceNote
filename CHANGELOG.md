@@ -6,6 +6,39 @@ GlanceNote is an independent personal project, unaffiliated with any university 
 
 ---
 
+## [1.0.3] — 2026-07-17 (Unreleased)
+
+Motion & interaction polish pass, guided by Apple's fluid-interface principles (feedback on press, materialize instead of hard-cut, spatial consistency, Reduce Motion support) and design-engineering craft rules (strong ease-out curves, sub-300 ms UI timing, never enter from `scale(0)`).
+
+### Added
+
+**Panel materialize / dematerialize (`NotePanel.swift`)**
+
+Floating panels no longer hard-cut with `orderFront`/`orderOut`. On open, a panel fades in while rising 8 pt into place (180 ms, strong ease-out `cubic-bezier(0.23, 1, 0.32, 1)`); on close it reverses the same path faster (130 ms) — enter and exit share one spatial path. When *Reduce Motion* is on, both collapse to a plain cross-fade with no positional movement. The exit animation restores pre-exit geometry after `orderOut` so the autosaved frame never drifts.
+
+**`PressableButtonStyle` (`NoteCardView.swift`)**
+
+Shared press feedback for all small controls: label scales down (0.85–0.92) the instant the pointer goes down, 120 ms ease-out. Applied to the panel close button, color swatches, glass swatch, S/M/L size pills, the popover “+” button, and the row pin button.
+
+**Menu bar popover (`MenuBarController.swift`)**
+
+- Row hover highlight (6 % primary, 100 ms) so the list responds to the pointer.
+- Pin icon morphs `pin` ⇄ `pin.fill` in place via `.contentTransition(.symbolEffect(.replace))`.
+- Right-click context menu per row: Pin/Unpin and **Delete** (closes the floating panel first, then deletes the model). Deleting notes was previously impossible from the UI.
+- Empty state (“No Notes — Click + to create a floating note.”) replaces the blank scroll area on first launch.
+- Row insertion/removal animates (200 ms ease-out) instead of teleporting.
+
+### Changed
+
+- **Preset resize** — replaced `setFrame(animate: true)` (AppKit's slow, linear-feeling default `animationResizeTime`) with an `NSAnimationContext`-driven resize: 280 ms, strong ease-out; instant under Reduce Motion.
+- **Close button hover reveal** — now scales from 0.9 with opacity (never enters from nothing), 140 ms ease-out (was 120 ms ease-in-out opacity-only).
+- **Color swatches** — converted from `onTapGesture` circles to real `Button`s: press feedback on pointer-down plus free keyboard/VoiceOver reachability. Selection-ring hand-off animates (150 ms) so choosing a color reads as the ring moving, not two blinks.
+- **Paper tint** — picking a swatch cross-fades the background color (200 ms) instead of hard-cutting.
+- **S/M/L pills reveal** — pills now also scale from 0.94 anchored at the trailing edge while fading in.
+- **Pin toggle** — now persists via `context.save()` (previously relied on SwiftData autosave only).
+
+---
+
 ## [1.0.2] — 2026-06-06 (Unreleased)
 
 ### Added

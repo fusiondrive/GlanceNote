@@ -95,6 +95,10 @@ struct NoteCardView: View {
                 Color(hex: note.colorTag.hexBackground).opacity(0.55)
             }
             .ignoresSafeArea()
+            // Crossfade the paper tint when the user picks a new swatch —
+            // a hard color cut reads as a glitch, a 200 ms fade reads as
+            // the paper changing.
+            .animation(.easeOut(duration: 0.2), value: note.colorTag)
         }
     }
 
@@ -185,6 +189,10 @@ struct NoteCardView: View {
             if let resize = onResize {
                 SizePresetBar(onResize: resize)
                     .opacity(isHovered ? 1 : 0)
+                    // Never enter from nothing — a slight scale from the
+                    // trailing edge makes the pills materialize in place
+                    // instead of popping.
+                    .scaleEffect(isHovered ? 1 : 0.94, anchor: .trailing)
             }
         }
         .animation(.spring(duration: 0.25), value: isHovered)
@@ -197,28 +205,31 @@ struct NoteCardView: View {
     /// Only inserted on macOS 26+ where .glassEffect is actually available.
     @available(macOS 26.0, *)
     private var glassSwatch: some View {
-        Circle()
-            .fill(.ultraThinMaterial)
-            .frame(width: 13, height: 13)
-            .overlay {
-                // tiny sparkle to distinguish this from the solid pastel circles
-                Image(systemName: "sparkle")
-                    .font(.system(size: 6, weight: .medium))
-                    .foregroundStyle(Color.primary.opacity(0.6))
-            }
-            .overlay {
-                // same selection ring logic as the pastel swatches — 1.5pt when
-                // active, 0.5pt hairline when not, so the whole row feels consistent
-                Circle().strokeBorder(
-                    isNoteGlassEnabled ? Color.black.opacity(0.5) : Color.black.opacity(0.15),
-                    lineWidth: isNoteGlassEnabled ? 1.5 : 0.5
-                )
-            }
-            .onTapGesture {
-                isNoteGlassEnabled = true
-                commitSave()
-            }
-            .help("Liquid Glass (Beta)")
+        Button {
+            isNoteGlassEnabled = true
+            commitSave()
+        } label: {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .frame(width: 13, height: 13)
+                .overlay {
+                    // tiny sparkle to distinguish this from the solid pastel circles
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 6, weight: .medium))
+                        .foregroundStyle(Color.primary.opacity(0.6))
+                }
+                .overlay {
+                    // same selection ring logic as the pastel swatches — 1.5pt when
+                    // active, 0.5pt hairline when not, so the whole row feels consistent
+                    Circle().strokeBorder(
+                        isNoteGlassEnabled ? Color.black.opacity(0.5) : Color.black.opacity(0.15),
+                        lineWidth: isNoteGlassEnabled ? 1.5 : 0.5
+                    )
+                }
+        }
+        .buttonStyle(PressableButtonStyle(pressedScale: 0.85))
+        .animation(.easeOut(duration: 0.15), value: isNoteGlassEnabled)
+        .help("Liquid Glass (Beta)")
     }
 
     private func colorSwatch(_ color: NoteColor) -> some View {
@@ -227,23 +238,31 @@ struct NoteCardView: View {
         // an unknown wallpaper; pastel mode keeps the static dark ring
         let selectedColor: Color = glassActive ? .primary.opacity(0.55) : .black.opacity(0.5)
         let normalColor:   Color = glassActive ? .primary.opacity(0.2)  : .black.opacity(0.15)
-        return Circle()
-            .fill(Color(hex: color.hexBackground))
-            .frame(width: 13, height: 13)
-            .overlay {
-                Circle().strokeBorder(
-                    isSelected ? selectedColor : normalColor,
-                    lineWidth: isSelected ? 1.5 : 0.5
-                )
-            }
-            .onTapGesture {
-                note.colorTag = color
-                // kill glass mode if they explicitly pick a standard paper color —
-                // the two modes are mutually exclusive in the selection UI
-                isNoteGlassEnabled = false
-                // color changes skip the debounce — task(id:) only watches body
-                commitSave()
-            }
+        // A real Button rather than onTapGesture: the swatch scales down the
+        // instant it is pressed (feedback on pointer-down, not on release),
+        // and it becomes reachable by keyboard and VoiceOver for free.
+        return Button {
+            note.colorTag = color
+            // kill glass mode if they explicitly pick a standard paper color —
+            // the two modes are mutually exclusive in the selection UI
+            isNoteGlassEnabled = false
+            // color changes skip the debounce — task(id:) only watches body
+            commitSave()
+        } label: {
+            Circle()
+                .fill(Color(hex: color.hexBackground))
+                .frame(width: 13, height: 13)
+                .overlay {
+                    Circle().strokeBorder(
+                        isSelected ? selectedColor : normalColor,
+                        lineWidth: isSelected ? 1.5 : 0.5
+                    )
+                }
+        }
+        .buttonStyle(PressableButtonStyle(pressedScale: 0.85))
+        // Animate the selection ring hand-off so choosing a color reads as
+        // the ring moving, not two independent blinks.
+        .animation(.easeOut(duration: 0.15), value: isSelected)
     }
 
     // MARK: - Save
@@ -385,10 +404,30 @@ private struct SizePresetBar: View {
                     // ultraThinMaterial resolves to its light variant in pastel mode
                     // because NoteAppearanceModifier pushes .light into the environment
                     .background(.ultraThinMaterial, in: Capsule())
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableButtonStyle())
                     .help("Resize panel to \(preset.label)")
             }
         }
+    }
+}
+
+// MARK: - PressableButtonStyle
+
+/// Shared press feedback for every small control in the app.
+///
+/// Feedback lives on the press, not the release: the label scales down the
+/// instant the pointer goes down, confirming the interface heard the user.
+/// The scale is subtle and the timing short (~120 ms ease-out) — press
+/// feedback is seen dozens of times a day, so it must never feel like an
+/// animation, only like responsiveness.
+struct PressableButtonStyle: ButtonStyle {
+
+    var pressedScale: CGFloat = 0.92
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
